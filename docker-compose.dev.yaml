@@ -1,0 +1,22 @@
+name: 3d-game
+
+services:
+  traefik:
+    image: traefik:v3.6
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.local.address=:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "80:80"
+      - "8080:8080"
+    networks:
+      - dmz
+
+  web:
+    build: .
+    labels:
+      traefik.http.routers.3d-game.entrypoints: "local"

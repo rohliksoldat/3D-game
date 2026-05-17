@@ -1,0 +1,15 @@
+services:
+  web:
+    image: ${IMAGE_URL:-3d-game}:${IMAGE_TAG:-latest}
+    deploy:
+      labels: &web_labels
+        traefik.enable: "true"
+        traefik.http.services.3d-game.loadbalancer.server.port: "80"
+        traefik.http.routers.3d-game.rule: "Host(`${PUBLISH_URL}`)"
+    labels: *web_labels
+    networks:
+      - dmz
+
+networks:
+  dmz:
+    name: dmz

@@ -1,0 +1,17 @@
+services:
+  web:
+    deploy:
+      replicas: 1
+      update_config:
+        order: start-first
+      restart_policy:
+        condition: any
+      labels:
+        traefik.http.routers.3d-game.entrypoints: "websecure"
+        traefik.http.routers.3d-game.tls: "true"
+        traefik.http.routers.3d-game.tls.certresolver: "acmeresolver"
+        traefik.docker.network: "dmz"
+
+networks:
+  dmz:
+    external: true
