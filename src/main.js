@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
+import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 
 const WORLD_SIZE = 15;
 const WALL_HEIGHT = 6;
@@ -13,6 +14,9 @@ const PLAYER_HEIGHT = 1.7;
 const JUMP_VELOCITY = 8;
 const GRAVITY = 22;
 const MUZZLE_FLASH_MS = 60;
+const VR_SPEED = 3.0;
+const VR_SNAP_ANGLE = Math.PI / 6;
+const VR_STICK_DEADZONE = 0.2;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x9ec7ea);
@@ -31,12 +35,20 @@ try {
 const camera = new THREE.PerspectiveCamera(settings.fov, window.innerWidth / window.innerHeight, 0.1, 500);
 camera.position.set(0, PLAYER_HEIGHT, 0);
 
+// Player rig: holds camera (and VR controllers). Locomotion moves the rig;
+// in VR the headset drives the camera's local pose, in desktop we set it.
+const playerRig = new THREE.Group();
+scene.add(playerRig);
+playerRig.add(camera);
+
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.xr.enabled = true;
 document.getElementById('app').appendChild(renderer.domElement);
+document.body.appendChild(VRButton.createButton(renderer));
 
 const hemi = new THREE.HemisphereLight(0xffffff, 0x445566, 0.55);
 scene.add(hemi);
@@ -208,7 +220,7 @@ for (let i = 0; i < 5; i++) {
 
 const controls = new PointerLockControls(camera, renderer.domElement);
 if ('pointerSpeed' in controls) controls.pointerSpeed = settings.sensitivity;
-scene.add(controls.getObject());
+// camera is already parented to playerRig; PointerLockControls only rotates it.
 
 // Web Audio: synthesized SFX so no asset files are needed.
 let audioCtx = null;
@@ -244,28 +256,68 @@ function sfxShoot() { playTone({ type: 'square', freqStart: 380, freqEnd: 60, du
 function sfxHit()   { playTone({ type: 'sawtooth', freqStart: 900, freqEnd: 1500, duration: 0.06, gain: 0.2 }); }
 function sfxHurt()  { playTone({ type: 'sawtooth', freqStart: 220, freqEnd: 90, duration: 0.18, gain: 0.35 }); }
 
-const gun = new THREE.Group();
-const gunBody = new THREE.Mesh(
-  new THREE.BoxGeometry(0.15, 0.15, 0.6),
-  new THREE.MeshStandardMaterial({ color: 0x222222 })
-);
-gunBody.position.set(0.25, -0.2, -0.4);
-gun.add(gunBody);
-const gunBarrel = new THREE.Mesh(
-  new THREE.CylinderGeometry(0.04, 0.04, 0.4),
-  new THREE.MeshStandardMaterial({ color: 0x111111 })
-);
-gunBarrel.rotation.x = Math.PI / 2;
-gunBarrel.position.set(0.25, -0.2, -0.75);
-gun.add(gunBarrel);
-const muzzle = new THREE.Mesh(
-  new THREE.SphereGeometry(0.12, 8, 8),
-  new THREE.MeshBasicMaterial({ color: 0xffee66 })
-);
-muzzle.position.set(0.25, -0.2, -0.95);
-muzzle.visible = false;
-gun.add(muzzle);
-camera.add(gun);
+// Desktop gun: attached to camera, offset to lower-right of view.
+function buildGun(offset) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(0.15, 0.15, 0.6),
+    new THREE.MeshStandardMaterial({ color: 0x222222 })
+  );
+  body.position.set(0, 0, -0.2);
+  g.add(body);
+  const barrel = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.04, 0.04, 0.4),
+    new THREE.MeshStandardMaterial({ color: 0x111111 })
+  );
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0, -0.55);
+  g.add(barrel);
+  const flash = new THREE.Mesh(
+    new THREE.SphereGeometry(0.1, 8, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffee66 })
+  );
+  flash.position.set(0, 0, -0.75);
+  flash.visible = false;
+  g.add(flash);
+  if (offset) g.position.copy(offset);
+  return { group: g, flash };
+}
+
+const desktopGun = buildGun(new THREE.Vector3(0.25, -0.2, -0.2));
+camera.add(desktopGun.group);
+const muzzle = desktopGun.flash;
+
+// VR controllers (right = primary shooter, left = movement).
+const controllerR = renderer.xr.getController(0);
+const controllerL = renderer.xr.getController(1);
+playerRig.add(controllerR);
+playerRig.add(controllerL);
+const vrGunR = buildGun(null);
+const vrGunL = buildGun(null);
+controllerR.add(vrGunR.group);
+controllerL.add(vrGunL.group);
+
+function flashMuzzle(flash) {
+  flash.visible = true;
+  setTimeout(() => { flash.visible = false; }, MUZZLE_FLASH_MS);
+}
+
+const tmpOrigin = new THREE.Vector3();
+const tmpQuat = new THREE.Quaternion();
+function shootFromController(controller, flash) {
+  controller.getWorldPosition(tmpOrigin);
+  const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(controller.getWorldQuaternion(tmpQuat));
+  shoot(tmpOrigin, dir);
+  flashMuzzle(flash);
+}
+controllerR.addEventListener('selectstart', () => {
+  if (state.gameOver) { resetGame(); state.running = true; return; }
+  shootFromController(controllerR, vrGunR.flash);
+});
+controllerL.addEventListener('selectstart', () => {
+  if (state.gameOver) { resetGame(); state.running = true; return; }
+  shootFromController(controllerL, vrGunL.flash);
+});
 
 const enemies = [];
 const enemyGeometry = new THREE.SphereGeometry(0.6, 16, 16);
@@ -295,11 +347,10 @@ const bulletMaterial = new THREE.MeshBasicMaterial({ color: 0xffd24a });
 const raycaster = new THREE.Raycaster();
 const tmpDir = new THREE.Vector3();
 
-function shoot() {
+function shoot(origin, dir) {
   if (!state.running || state.gameOver) return;
 
-  controls.getDirection(tmpDir);
-  raycaster.set(camera.getWorldPosition(new THREE.Vector3()), tmpDir);
+  raycaster.set(origin, dir);
 
   const enemyMeshes = enemies.map(e => e.mesh);
   const hits = raycaster.intersectObjects(enemyMeshes, false);
@@ -318,15 +369,19 @@ function shoot() {
   }
 
   const bullet = new THREE.Mesh(bulletGeometry, bulletMaterial);
-  bullet.position.copy(camera.getWorldPosition(new THREE.Vector3()));
-  bullet.userData.velocity = tmpDir.clone().multiplyScalar(80);
+  bullet.position.copy(origin);
+  bullet.userData.velocity = dir.clone().multiplyScalar(80);
   bullet.userData.life = 1.0;
   scene.add(bullet);
   bullets.push(bullet);
 
-  muzzle.visible = true;
-  setTimeout(() => { muzzle.visible = false; }, MUZZLE_FLASH_MS);
   sfxShoot();
+}
+
+function shootFromCamera() {
+  camera.getWorldDirection(tmpDir);
+  shoot(camera.getWorldPosition(tmpOrigin), tmpDir);
+  flashMuzzle(muzzle);
 }
 
 const state = {
@@ -339,7 +394,6 @@ const state = {
 
 const keys = { forward: false, backward: false, left: false, right: false, jump: false };
 const velocity = new THREE.Vector3();
-const direction = new THREE.Vector3();
 let canJump = false;
 
 document.addEventListener('keydown', (e) => {
@@ -363,7 +417,7 @@ document.addEventListener('keyup', (e) => {
 });
 
 renderer.domElement.addEventListener('mousedown', (e) => {
-  if (e.button === 0 && controls.isLocked) shoot();
+  if (e.button === 0 && controls.isLocked) shootFromCamera();
 });
 
 const menuEl = document.getElementById('menu');
@@ -495,7 +549,9 @@ function resetGame() {
   state.spawnTimer = 0;
   gameOverEl.classList.add('hidden');
   startBtn.textContent = 'Hrát';
-  controls.getObject().position.set(0, PLAYER_HEIGHT, 0);
+  playerRig.position.set(0, 0, 0);
+  playerRig.rotation.set(0, 0, 0);
+  camera.position.set(0, PLAYER_HEIGHT, 0);
   velocity.set(0, 0, 0);
   updateHud();
 }
@@ -518,8 +574,8 @@ const playerBox = new THREE.Box3();
 const playerSize = new THREE.Vector3(0.6, PLAYER_HEIGHT, 0.6);
 const tmpCenter = new THREE.Vector3();
 
-function collidesWithObstacle(pos) {
-  tmpCenter.set(pos.x, pos.y - PLAYER_HEIGHT / 2, pos.z);
+function collidesAtXZ(x, z) {
+  tmpCenter.set(x, PLAYER_HEIGHT / 2, z);
   playerBox.setFromCenterAndSize(tmpCenter, playerSize);
   for (const box of obstacleBoxes) {
     if (box.intersectsBox(playerBox)) return true;
@@ -540,103 +596,213 @@ function enemyCollidesAt(x, y, z) {
 }
 
 const clock = new THREE.Clock();
+const tmpPlayer = new THREE.Vector3();
+const tmpForward = new THREE.Vector3();
+const tmpRight = new THREE.Vector3();
+const tmpMove = new THREE.Vector3();
 
-function animate() {
-  requestAnimationFrame(animate);
-  const delta = Math.min(clock.getDelta(), 0.05);
+function updateDesktop(delta) {
+  velocity.x -= velocity.x * 10.0 * delta;
+  velocity.z -= velocity.z * 10.0 * delta;
+  velocity.y -= GRAVITY * delta;
 
-  if (state.running && !state.gameOver) {
-    velocity.x -= velocity.x * 10.0 * delta;
-    velocity.z -= velocity.z * 10.0 * delta;
-    velocity.y -= GRAVITY * delta;
+  camera.getWorldDirection(tmpForward);
+  tmpForward.y = 0;
+  if (tmpForward.lengthSq() > 0) tmpForward.normalize();
+  tmpRight.set(-tmpForward.z, 0, tmpForward.x);
 
-    const forward = new THREE.Vector3();
-    camera.getWorldDirection(forward);
-    forward.y = 0;
-    if (forward.lengthSq() > 0) forward.normalize();
-    const right = new THREE.Vector3(-forward.z, 0, forward.x);
-
-    const moveDir = new THREE.Vector3();
-    if (keys.forward) moveDir.add(forward);
-    if (keys.backward) moveDir.sub(forward);
-    if (keys.right) moveDir.add(right);
-    if (keys.left) moveDir.sub(right);
-    if (moveDir.lengthSq() > 0) {
-      moveDir.normalize();
-      velocity.x += moveDir.x * PLAYER_SPEED * delta;
-      velocity.z += moveDir.z * PLAYER_SPEED * delta;
-    }
-
-    const obj = controls.getObject();
-
-    const moveX = velocity.x * delta;
-    obj.position.x += moveX;
-    if (collidesWithObstacle(obj.position)) {
-      obj.position.x -= moveX;
-      velocity.x = 0;
-    }
-
-    const moveZ = velocity.z * delta;
-    obj.position.z += moveZ;
-    if (collidesWithObstacle(obj.position)) {
-      obj.position.z -= moveZ;
-      velocity.z = 0;
-    }
-
-    obj.position.y += velocity.y * delta;
-    if (obj.position.y < PLAYER_HEIGHT) {
-      obj.position.y = PLAYER_HEIGHT;
-      velocity.y = 0;
-      canJump = true;
-    }
-
-    state.spawnTimer += delta;
-    if (state.spawnTimer >= ENEMY_SPAWN_INTERVAL) {
-      state.spawnTimer = 0;
-      spawnEnemy();
-    }
-
-    const playerPos = obj.position;
-    for (let i = enemies.length - 1; i >= 0; i--) {
-      const enemy = enemies[i];
-      const ep = enemy.mesh.position;
-      const toPlayer = new THREE.Vector3().subVectors(playerPos, ep);
-      toPlayer.y = 0;
-      const dist = toPlayer.length();
-      if (dist > 0.001) {
-        toPlayer.normalize();
-        const dx = toPlayer.x * ENEMY_SPEED * delta;
-        const dz = toPlayer.z * ENEMY_SPEED * delta;
-        if (!enemyCollidesAt(ep.x + dx, ep.y, ep.z)) ep.x += dx;
-        if (!enemyCollidesAt(ep.x, ep.y, ep.z + dz)) ep.z += dz;
-      }
-      if (dist < ENEMY_HIT_DISTANCE) {
-        const before = state.health;
-        state.health -= ENEMY_DAMAGE * delta * 2;
-        if (Math.floor(before / 10) !== Math.floor(state.health / 10)) sfxHurt();
-        if (state.health <= 0) {
-          updateHud();
-          endGame();
-          break;
-        }
-      }
-    }
-
-    for (let i = bullets.length - 1; i >= 0; i--) {
-      const b = bullets[i];
-      b.position.addScaledVector(b.userData.velocity, delta);
-      b.userData.life -= delta;
-      if (b.userData.life <= 0) {
-        scene.remove(b);
-        bullets.splice(i, 1);
-      }
-    }
-
-    updateHud();
+  tmpMove.set(0, 0, 0);
+  if (keys.forward) tmpMove.add(tmpForward);
+  if (keys.backward) tmpMove.sub(tmpForward);
+  if (keys.right) tmpMove.add(tmpRight);
+  if (keys.left) tmpMove.sub(tmpRight);
+  if (tmpMove.lengthSq() > 0) {
+    tmpMove.normalize();
+    velocity.x += tmpMove.x * PLAYER_SPEED * delta;
+    velocity.z += tmpMove.z * PLAYER_SPEED * delta;
   }
 
+  const moveX = velocity.x * delta;
+  playerRig.position.x += moveX;
+  if (collidesAtXZ(playerRig.position.x, playerRig.position.z)) {
+    playerRig.position.x -= moveX;
+    velocity.x = 0;
+  }
+  const moveZ = velocity.z * delta;
+  playerRig.position.z += moveZ;
+  if (collidesAtXZ(playerRig.position.x, playerRig.position.z)) {
+    playerRig.position.z -= moveZ;
+    velocity.z = 0;
+  }
+
+  camera.position.y += velocity.y * delta;
+  if (camera.position.y < PLAYER_HEIGHT) {
+    camera.position.y = PLAYER_HEIGHT;
+    velocity.y = 0;
+    canJump = true;
+  }
+}
+
+let snapReady = true;
+function snapTurn(angle) {
+  camera.getWorldPosition(tmpPlayer);
+  const dx = playerRig.position.x - tmpPlayer.x;
+  const dz = playerRig.position.z - tmpPlayer.z;
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  playerRig.position.x = tmpPlayer.x + dx * cos - dz * sin;
+  playerRig.position.z = tmpPlayer.z + dx * sin + dz * cos;
+  playerRig.rotation.y += angle;
+}
+
+function updateVR(delta) {
+  const session = renderer.xr.getSession();
+  if (!session) return;
+  let mx = 0, mz = 0, turn = 0;
+  for (const src of session.inputSources) {
+    if (!src.gamepad) continue;
+    const axes = src.gamepad.axes;
+    const ax = axes.length >= 4 ? axes[2] : axes[0];
+    const ay = axes.length >= 4 ? axes[3] : axes[1];
+    if (src.handedness === 'left') {
+      if (Math.abs(ax) > VR_STICK_DEADZONE) mx += ax;
+      if (Math.abs(ay) > VR_STICK_DEADZONE) mz += ay;
+    } else if (src.handedness === 'right') {
+      if (Math.abs(ax) > VR_STICK_DEADZONE) turn = ax;
+    }
+  }
+
+  if (mx !== 0 || mz !== 0) {
+    camera.getWorldDirection(tmpForward);
+    tmpForward.y = 0;
+    if (tmpForward.lengthSq() > 0) tmpForward.normalize();
+    tmpRight.set(-tmpForward.z, 0, tmpForward.x);
+    tmpMove.set(0, 0, 0);
+    tmpMove.addScaledVector(tmpForward, -mz);
+    tmpMove.addScaledVector(tmpRight, mx);
+    if (tmpMove.lengthSq() > 0) {
+      tmpMove.normalize().multiplyScalar(VR_SPEED * delta);
+      camera.getWorldPosition(tmpPlayer);
+      if (!collidesAtXZ(tmpPlayer.x + tmpMove.x, tmpPlayer.z)) playerRig.position.x += tmpMove.x;
+      if (!collidesAtXZ(tmpPlayer.x, tmpPlayer.z + tmpMove.z)) playerRig.position.z += tmpMove.z;
+    }
+  }
+
+  if (Math.abs(turn) > 0.7) {
+    if (snapReady) {
+      snapTurn(turn > 0 ? -VR_SNAP_ANGLE : VR_SNAP_ANGLE);
+      snapReady = false;
+    }
+  } else {
+    snapReady = true;
+  }
+}
+
+function updateGameLogic(delta) {
+  state.spawnTimer += delta;
+  if (state.spawnTimer >= ENEMY_SPAWN_INTERVAL) {
+    state.spawnTimer = 0;
+    spawnEnemy();
+  }
+
+  camera.getWorldPosition(tmpPlayer);
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const enemy = enemies[i];
+    const ep = enemy.mesh.position;
+    const toPlayer = new THREE.Vector3(tmpPlayer.x - ep.x, 0, tmpPlayer.z - ep.z);
+    const dist = toPlayer.length();
+    if (dist > 0.001) {
+      toPlayer.normalize();
+      const dx = toPlayer.x * ENEMY_SPEED * delta;
+      const dz = toPlayer.z * ENEMY_SPEED * delta;
+      if (!enemyCollidesAt(ep.x + dx, ep.y, ep.z)) ep.x += dx;
+      if (!enemyCollidesAt(ep.x, ep.y, ep.z + dz)) ep.z += dz;
+    }
+    if (dist < ENEMY_HIT_DISTANCE) {
+      const before = state.health;
+      state.health -= ENEMY_DAMAGE * delta * 2;
+      if (Math.floor(before / 10) !== Math.floor(state.health / 10)) sfxHurt();
+      if (state.health <= 0) {
+        updateHud();
+        endGame();
+        break;
+      }
+    }
+  }
+
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.position.addScaledVector(b.userData.velocity, delta);
+    b.userData.life -= delta;
+    if (b.userData.life <= 0) {
+      scene.remove(b);
+      bullets.splice(i, 1);
+    }
+  }
+
+  updateHud();
+}
+
+// In-headset HUD: a small canvas plane attached to the camera (DOM HUD is invisible in VR).
+const vrHudCanvas = document.createElement('canvas');
+vrHudCanvas.width = 512;
+vrHudCanvas.height = 128;
+const vrHudCtx = vrHudCanvas.getContext('2d');
+const vrHudTex = new THREE.CanvasTexture(vrHudCanvas);
+const vrHud = new THREE.Mesh(
+  new THREE.PlaneGeometry(0.5, 0.125),
+  new THREE.MeshBasicMaterial({ map: vrHudTex, transparent: true, depthTest: false })
+);
+vrHud.position.set(0, -0.32, -1);
+vrHud.renderOrder = 999;
+vrHud.visible = false;
+camera.add(vrHud);
+
+let vrHudLast = '';
+function updateVRHud() {
+  vrHud.visible = renderer.xr.isPresenting;
+  if (!vrHud.visible) return;
+  const text = state.gameOver
+    ? `KONEC - skore ${state.score} - spoust = restart`
+    : `Skore ${state.score}    Zivoty ${Math.max(0, Math.round(state.health))}    Nepratele ${enemies.length}`;
+  if (text === vrHudLast) return;
+  vrHudLast = text;
+  vrHudCtx.clearRect(0, 0, 512, 128);
+  vrHudCtx.fillStyle = 'rgba(0,0,0,0.55)';
+  vrHudCtx.fillRect(0, 0, 512, 128);
+  vrHudCtx.fillStyle = '#ffffff';
+  vrHudCtx.font = 'bold 28px sans-serif';
+  vrHudCtx.textAlign = 'center';
+  vrHudCtx.textBaseline = 'middle';
+  vrHudCtx.fillText(text, 256, 64);
+  vrHudTex.needsUpdate = true;
+}
+
+renderer.xr.addEventListener('sessionstart', () => {
+  ensureAudio();
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  menuEl.classList.add('hidden');
+  if (typeof settingsEl !== 'undefined') settingsEl.classList.add('hidden');
+  desktopGun.group.visible = false;
+  resetGame();
+  state.running = true;
+});
+renderer.xr.addEventListener('sessionend', () => {
+  state.running = false;
+  desktopGun.group.visible = true;
+  menuEl.classList.remove('hidden');
+  vrHud.visible = false;
+});
+
+function render() {
+  const delta = Math.min(clock.getDelta(), 0.05);
+  if (state.running && !state.gameOver) {
+    if (renderer.xr.isPresenting) updateVR(delta);
+    else updateDesktop(delta);
+    updateGameLogic(delta);
+  }
+  updateVRHud();
   renderer.render(scene, camera);
 }
 
 updateHud();
-animate();
+renderer.setAnimationLoop(render);
