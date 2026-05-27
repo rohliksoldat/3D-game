@@ -10,7 +10,7 @@ services:
         traefik.http.routers.3d-game.entrypoints: "websecure"
         traefik.http.routers.3d-game.tls: "true"
         traefik.http.routers.3d-game.tls.certresolver: "acmeresolver"
-        traefik.docker.network: "dmz"
+        traefik.swarm.network: "dmz"
 
 networks:
   dmz:
