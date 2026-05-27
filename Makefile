@@ -1,13 +1,18 @@
-# 3D FPS — local dev via Traefik, deploy to primus.nadoma.net (Docker Swarm)
+# 3D FPS — local dev via Traefik, deploy to Docker Swarm.
+# Variable names mirror the GitHub Actions project variables (see
+# .github/workflows/{build,deploy}.yaml).
 
-STACK_NAME           ?= 3d-game
-export PUBLISH_URL   ?= 3d.localhost
-export IMAGE_URL     ?= registry.nadoma.net/3d-game
-export IMAGE_TAG     ?= $(shell git rev-parse --short HEAD)
+STACK_NAME              ?= 3d-game
+REGISTRY_HOST           ?= registry.nadoma.net
+IMAGE_TAG               ?= $(shell git rev-parse --short HEAD)
 
-PROD_HOST            ?= admin@primus.nadoma.net
-PROD_DIR             ?= /srv/3D-game
-PROD_PUBLISH_URL     ?= 3d.nadoma.net
+export IMAGE_URL        ?= $(REGISTRY_HOST)/$(STACK_NAME)
+export PUBLISH_DOMAIN   ?= 3d.localhost
+
+DEPLOY_HOST             ?= primus.nadoma.net
+DEPLOY_SSH_USER         ?= admin
+DEPLOY_DIR              ?= /srv/3D-game
+DEPLOY_PUBLISH_DOMAIN   ?= 3d.nadoma.net
 
 COMPOSE_DEV := -f docker-compose.yaml -f docker-compose.dev.yaml
 
@@ -23,9 +28,9 @@ help: ## Show this help
 build: ## Build local image
 	docker compose $(COMPOSE_DEV) build
 
-start: ## Start Traefik + game on http://$(PUBLISH_URL)
+start: ## Start Traefik + game on http://$(PUBLISH_DOMAIN)
 	docker compose $(COMPOSE_DEV) up --detach --remove-orphans
-	@echo "Running at http://$(PUBLISH_URL)"
+	@echo "Running at http://$(PUBLISH_DOMAIN)"
 
 build-and-start: build start ## Build and start (default target)
 
@@ -38,7 +43,7 @@ down: ## Remove containers and network
 logs: ## Tail container logs
 	docker compose $(COMPOSE_DEV) logs --follow
 
-### Production deployment to $(PROD_HOST)
+### Production deployment to $(DEPLOY_SSH_USER)@$(DEPLOY_HOST)
 
 push: ## Build prod image for linux/amd64 and push to $(IMAGE_URL)
 	docker buildx build --platform linux/amd64 \
@@ -46,13 +51,13 @@ push: ## Build prod image for linux/amd64 and push to $(IMAGE_URL)
 		-t $(IMAGE_URL):latest \
 		--push .
 
-deploy: push ## Push image, ship resolved stack file to $(PROD_HOST), deploy
-	PUBLISH_URL=$(PROD_PUBLISH_URL) \
+deploy: push ## Push image, ship resolved stack file, deploy
+	PUBLISH_DOMAIN=$(DEPLOY_PUBLISH_DOMAIN) \
 		docker compose -f docker-compose.yaml -f docker-compose.deploy.yaml config \
 		| sed '/^name:/d' \
-		| ssh $(PROD_HOST) "mkdir -p $(PROD_DIR) \
-			&& cat > $(PROD_DIR)/docker-stack.yaml \
-			&& cd $(PROD_DIR) \
+		| ssh $(DEPLOY_SSH_USER)@$(DEPLOY_HOST) "mkdir -p $(DEPLOY_DIR) \
+			&& cat > $(DEPLOY_DIR)/docker-stack.yaml \
+			&& cd $(DEPLOY_DIR) \
 			&& docker stack deploy --with-registry-auth --prune \
 				-c docker-stack.yaml $(STACK_NAME)"
-	@echo "Deployed $(IMAGE_TAG) to https://$(PROD_PUBLISH_URL)"
+	@echo "Deployed $(IMAGE_TAG) to https://$(DEPLOY_PUBLISH_DOMAIN)"

@@ -1,0 +1,100 @@
+# Deploy 3D-game stack to Docker Swarm.
+#
+# Triggered by build.yaml after a successful image push, or manually
+# via the Actions tab.
+#
+# Required GitHub variables (Settings → Variables → Actions):
+#   DEPLOY_HOST      — manager hostname or IP
+#   DEPLOY_SSH_USER  — SSH user with docker permission
+#   PUBLISH_DOMAIN   — public hostname for Traefik (e.g. 3d.nadoma.net)
+#   REGISTRY_HOST    — e.g. registry.nadoma.net
+#   REGISTRY_USER    — registry login user
+#
+# Required GitHub secrets:
+#   DEPLOY_SSH_PRIVATE_KEY — full private key (PEM)
+#   REGISTRY_PASSWORD       — registry login password (used on the
+#                              manager to pull on update)
+
+name: Deploy to Docker Swarm
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy'
+        required: true
+        type: string
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      STACK_NAME: 3d-game
+      TARGET_FOLDER: /srv/3D-game
+      IMAGE_URL: ${{ vars.REGISTRY_HOST }}/3d-game
+      IMAGE_TAG: ${{ inputs.image_tag }}
+      PUBLISH_DOMAIN: ${{ vars.PUBLISH_DOMAIN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Render docker-stack.yaml
+        run: |
+          docker compose \
+            -f docker-compose.yaml \
+            -f docker-compose.deploy.yaml \
+            config \
+            | sed '/^name:/d' \
+            > docker-stack.yaml
+
+          {
+            echo "### Deployment :rocket:"
+            echo ""
+            echo "**Stack:** \`${{ env.STACK_NAME }}\`"
+            echo "**Image tag:** \`${{ inputs.image_tag }}\`"
+            echo "**Target host:** \`${{ vars.DEPLOY_HOST }}\`"
+            echo "**Target folder:** \`${{ env.TARGET_FOLDER }}\`"
+            echo "**Publish URL:** \`https://${{ env.PUBLISH_DOMAIN }}\`"
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Copy stack file to remote server
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ vars.DEPLOY_HOST }}
+          username: ${{ vars.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          source: "docker-stack.yaml"
+          target: ${{ env.TARGET_FOLDER }}
+
+      - name: Deploy
+        uses: appleboy/ssh-action@v1
+        env:
+          TARGET_FOLDER: ${{ env.TARGET_FOLDER }}
+          STACK_NAME: ${{ env.STACK_NAME }}
+          REGISTRY_HOST: ${{ vars.REGISTRY_HOST }}
+          REGISTRY_USER: ${{ vars.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        with:
+          host: ${{ vars.DEPLOY_HOST }}
+          username: ${{ vars.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          envs: TARGET_FOLDER,STACK_NAME,REGISTRY_HOST,REGISTRY_USER,REGISTRY_PASSWORD
+          script: |
+            set -euo pipefail
+            cd "$TARGET_FOLDER"
+
+            echo "$REGISTRY_PASSWORD" \
+              | docker login -u "$REGISTRY_USER" --password-stdin "$REGISTRY_HOST"
+
+            docker stack deploy \
+              --with-registry-auth \
+              --prune \
+              -c docker-stack.yaml \
+              "$STACK_NAME"
+
+            docker stack services "$STACK_NAME"
