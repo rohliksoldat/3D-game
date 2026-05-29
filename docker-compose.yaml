@@ -4,8 +4,8 @@ services:
     deploy:
       labels: &web_labels
         traefik.enable: "true"
-        traefik.http.services.3d-game.loadbalancer.server.port: "80"
         traefik.http.routers.3d-game.rule: "Host(`${PUBLISH_DOMAIN}`)"
+        traefik.http.services.3d-game.loadbalancer.server.port: "80"
     labels: *web_labels
     networks:
       - dmz
