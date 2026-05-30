@@ -1,4 +1,4 @@
-# 3D FPS
+# 3D GAME
 
 Jednoduchá first-person 3D arénová střílečka postavená na **Three.js** + **Vite**. Aréna obehnaná zdmi, neustále spawnující nepřátelé, HUD a uložitelné nastavení.
 
